@@ -4,7 +4,6 @@ export const MAP_HEIGHT = 600;
 export const STATIONS_URL = 'https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle';
 export const ACTIVE_SATS_URL = 'https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=tle';
 export const LAND_GEOJSON_URL = 'https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json';
-export const MAPLIBRE_GLOBE_STYLE_URL = 'https://demotiles.maplibre.org/style.json';
 export const LOCAL_STATIONS_URL = '/data/stations.tle';
 export const LOCAL_ACTIVE_URL = '/data/active.tle';
 export const TRACKER_SETTINGS_URL = '/data/tracker-settings.json';

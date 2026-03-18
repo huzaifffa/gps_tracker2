@@ -12,12 +12,13 @@
   "license": "ISC",
   "description": "React satellite tracker",
   "dependencies": {
-    "maplibre-gl": "^5.20.2",
+    "cesium": "^1.129.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "satellite.js": "^6.0.1"
   },
   "devDependencies": {
-    "vite": "^6.3.5"
+    "vite": "^6.3.5",
+    "vite-plugin-static-copy": "^3.3.0"
   }
 }

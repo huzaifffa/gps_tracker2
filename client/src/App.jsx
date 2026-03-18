@@ -116,7 +116,7 @@ export default function App() {
               <span>{selectedSatellite.category}</span>
             </div>
             <div>
-              Lat {selectedSatellite.degreesLat.toFixed(2)}°, Lon {selectedSatellite.degreesLong.toFixed(2)}°, Alt{' '}
+              Lat {selectedSatellite.latitude.toFixed(2)}°, Lon {selectedSatellite.longitude.toFixed(2)}°, Alt{' '}
               {selectedSatellite.altitudeKm.toFixed(0)} km
             </div>
           </footer>

@@ -1,116 +1,19 @@
-import React, { useEffect, useMemo, useRef } from 'react';
-import maplibregl from 'maplibre-gl';
-import { CATEGORY_COLORS, MAPLIBRE_GLOBE_STYLE_URL } from './constants';
-import { formatCoordinate } from './satelliteData';
+import React, { useEffect, useRef } from 'react';
+import * as Cesium from 'cesium';
+import { CATEGORY_COLORS } from './constants';
 
-const EMPTY_FEATURE_COLLECTION = { type: 'FeatureCollection', features: [] };
+function getSatelliteColor(category) {
+  return Cesium.Color.fromCssColorString(CATEGORY_COLORS[category] ?? CATEGORY_COLORS.Other);
+}
 
-function buildSatelliteCollection(satellites) {
+function getSatellitePointStyle(satellite, isSelected) {
   return {
-    type: 'FeatureCollection',
-    features: satellites.map((satellite) => ({
-      type: 'Feature',
-      geometry: {
-        type: 'Point',
-        coordinates: [satellite.longitude, satellite.latitude],
-      },
-      properties: {
-        altitudeKm: satellite.altitudeKm,
-        category: satellite.category,
-        color: CATEGORY_COLORS[satellite.category] ?? CATEGORY_COLORS.Other,
-        id: satellite.id,
-        latitudeLabel: formatCoordinate(satellite.latitude, 'N', 'S'),
-        longitudeLabel: formatCoordinate(satellite.longitude, 'E', 'W'),
-        name: satellite.name,
-        size: satellite.category === 'Stations' ? 7 : 5,
-      },
-    })),
+    color: getSatelliteColor(satellite.category),
+    disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    outlineColor: isSelected ? Cesium.Color.WHITE : Cesium.Color.fromCssColorString('#020617'),
+    outlineWidth: isSelected ? 3 : 1,
+    pixelSize: isSelected ? 12 : satellite.category === 'Stations' ? 9 : 6,
   };
-}
-
-function buildSelectedCollection(selectedSatellite) {
-  if (!selectedSatellite) {
-    return EMPTY_FEATURE_COLLECTION;
-  }
-
-  return {
-    type: 'FeatureCollection',
-    features: [
-      {
-        type: 'Feature',
-        geometry: {
-          type: 'Point',
-          coordinates: [selectedSatellite.longitude, selectedSatellite.latitude],
-        },
-        properties: {
-          id: selectedSatellite.id,
-        },
-      },
-    ],
-  };
-}
-
-function buildPopupContent(properties) {
-  const container = document.createElement('div');
-
-  const title = document.createElement('strong');
-  title.textContent = properties?.name ?? 'Satellite';
-  container.appendChild(title);
-
-  const category = document.createElement('div');
-  category.textContent = properties?.category ?? '';
-  container.appendChild(category);
-
-  const coordinates = document.createElement('div');
-  coordinates.textContent = `${properties?.latitudeLabel ?? ''} | ${properties?.longitudeLabel ?? ''}`;
-  container.appendChild(coordinates);
-
-  return container;
-}
-
-function ensureSourcesAndLayers(map) {
-  if (!map.getSource('satellites')) {
-    map.addSource('satellites', {
-      type: 'geojson',
-      data: EMPTY_FEATURE_COLLECTION,
-    });
-  }
-
-  if (!map.getLayer('satellite-points')) {
-    map.addLayer({
-      id: 'satellite-points',
-      type: 'circle',
-      source: 'satellites',
-      paint: {
-        'circle-color': ['get', 'color'],
-        'circle-opacity': 0.92,
-        'circle-radius': ['get', 'size'],
-        'circle-stroke-color': 'rgba(2, 6, 23, 0.92)',
-        'circle-stroke-width': 1.25,
-      },
-    });
-  }
-
-  if (!map.getSource('selected-satellite')) {
-    map.addSource('selected-satellite', {
-      type: 'geojson',
-      data: EMPTY_FEATURE_COLLECTION,
-    });
-  }
-
-  if (!map.getLayer('selected-satellite-ring')) {
-    map.addLayer({
-      id: 'selected-satellite-ring',
-      type: 'circle',
-      source: 'selected-satellite',
-      paint: {
-        'circle-color': 'rgba(255, 255, 255, 0.08)',
-        'circle-radius': 12,
-        'circle-stroke-color': '#ffffff',
-        'circle-stroke-width': 2,
-      },
-    });
-  }
 }
 
 export default function GodsEyeGlobe({
@@ -121,136 +24,148 @@ export default function GodsEyeGlobe({
   onPlotError,
 }) {
   const containerRef = useRef(null);
-  const mapRef = useRef(null);
-  const popupRef = useRef(null);
+  const viewerRef = useRef(null);
+  const clickHandlerRef = useRef(null);
   const previousSelectedIdRef = useRef('');
-  const satelliteCollectionRef = useRef(EMPTY_FEATURE_COLLECTION);
-  const selectedCollectionRef = useRef(EMPTY_FEATURE_COLLECTION);
-
-  const satelliteCollection = useMemo(
-    () => buildSatelliteCollection(filteredSatellites),
-    [filteredSatellites],
-  );
-
-  const selectedCollection = useMemo(
-    () => buildSelectedCollection(selectedSatellite),
-    [selectedSatellite],
-  );
-
-  satelliteCollectionRef.current = satelliteCollection;
-  selectedCollectionRef.current = selectedCollection;
 
   useEffect(() => {
-    if (!containerRef.current || mapRef.current) {
+    if (!containerRef.current || viewerRef.current) {
       return undefined;
     }
 
-    const map = new maplibregl.Map({
-      attributionControl: true,
-      container: containerRef.current,
-      center: [0, 18],
-      pitch: 0,
-      style: MAPLIBRE_GLOBE_STYLE_URL,
-      zoom: 0.9,
-    });
+    let disposed = false;
 
-    mapRef.current = map;
+    async function initializeViewer() {
+      try {
+        const viewer = new Cesium.Viewer(containerRef.current, {
+          animation: false,
+          baseLayerPicker: false,
+          fullscreenButton: false,
+          geocoder: false,
+          homeButton: false,
+          infoBox: false,
+          navigationHelpButton: false,
+          sceneModePicker: false,
+          selectionIndicator: false,
+          terrainProvider: new Cesium.EllipsoidTerrainProvider(),
+          timeline: false,
+        });
 
-    popupRef.current = new maplibregl.Popup({
-      closeButton: false,
-      closeOnClick: false,
-      offset: 14,
-    });
-
-    map.on('load', () => {
-      map.setProjection({ type: 'globe' });
-      map.setFog({
-        color: 'rgb(6, 15, 30)',
-        'high-color': 'rgb(22, 53, 92)',
-        'space-color': 'rgb(1, 4, 13)',
-        'star-intensity': 0.15,
-      });
-      ensureSourcesAndLayers(map);
-      map.getSource('satellites')?.setData(satelliteCollectionRef.current);
-      map.getSource('selected-satellite')?.setData(selectedCollectionRef.current);
-
-      map.on('click', 'satellite-points', (event) => {
-        const feature = event.features?.[0];
-        const satelliteId = feature?.properties?.id;
-
-        if (typeof satelliteId === 'string' && satelliteId) {
-          onSelectSatellite(satelliteId);
-        }
-      });
-
-      map.on('mouseenter', 'satellite-points', (event) => {
-        map.getCanvas().style.cursor = 'pointer';
-
-        const feature = event.features?.[0];
-        if (!feature || !popupRef.current) {
+        if (disposed) {
+          viewer.destroy();
           return;
         }
 
-        const coordinates = feature.geometry?.coordinates;
-        if (!Array.isArray(coordinates)) {
-          return;
-        }
+        viewerRef.current = viewer;
 
-        popupRef.current
-          .setLngLat(coordinates)
-          .setDOMContent(buildPopupContent(feature.properties))
-          .addTo(map);
-      });
+        viewer.scene.globe.enableLighting = true;
+        viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#020617');
+        viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#01040d');
+        viewer.scene.skyBox.show = false;
+        viewer.scene.moon.show = false;
+        viewer.scene.skyAtmosphere.show = true;
+        viewer.scene.skyAtmosphere.brightnessShift = -0.2;
+        viewer.scene.screenSpaceCameraController.enableCollisionDetection = false;
 
-      map.on('mouseleave', 'satellite-points', () => {
-        map.getCanvas().style.cursor = '';
-        popupRef.current?.remove();
-      });
+        viewer.imageryLayers.removeAll();
+        viewer.imageryLayers.addImageryProvider(
+          new Cesium.OpenStreetMapImageryProvider({
+            url: 'https://tile.openstreetmap.org/',
+          }),
+        );
 
-      onPlotError('');
-    });
+        clickHandlerRef.current = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+        clickHandlerRef.current.setInputAction((movement) => {
+          const picked = viewer.scene.pick(movement.position);
+          const entity = picked?.id;
 
-    map.on('error', (event) => {
-      const message = event?.error?.message ?? 'MapLibre globe failed to load.';
-      onPlotError(message);
-    });
+          if (entity && typeof entity.id === 'string') {
+            onSelectSatellite(entity.id);
+          }
+        }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
-    const resizeObserver = new ResizeObserver(() => {
-      map.resize();
-    });
-    resizeObserver.observe(containerRef.current);
+        onPlotError('');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Cesium globe failed to load.';
+        onPlotError(message);
+      }
+    }
+
+    initializeViewer();
 
     return () => {
-      resizeObserver.disconnect();
-      popupRef.current?.remove();
-      popupRef.current = null;
-      map.remove();
-      mapRef.current = null;
+      disposed = true;
+
+      if (clickHandlerRef.current) {
+        clickHandlerRef.current.destroy();
+        clickHandlerRef.current = null;
+      }
+
+      if (viewerRef.current && !viewerRef.current.isDestroyed()) {
+        viewerRef.current.destroy();
+        viewerRef.current = null;
+      }
     };
   }, [onPlotError, onSelectSatellite]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) {
+    const viewer = viewerRef.current;
+    if (!viewer) {
       return;
     }
 
-    ensureSourcesAndLayers(map);
-    map.getSource('satellites')?.setData(satelliteCollection);
-    map.getSource('selected-satellite')?.setData(selectedCollection);
-  }, [satelliteCollection, selectedCollection]);
+    viewer.entities.removeAll();
+
+    for (const satellite of filteredSatellites) {
+      const isSelected = satellite.id === selectedSatelliteId;
+
+      viewer.entities.add({
+        id: satellite.id,
+        name: satellite.name,
+        position: Cesium.Cartesian3.fromDegrees(
+          satellite.longitude,
+          satellite.latitude,
+          satellite.altitudeKm * 1000,
+        ),
+        point: getSatellitePointStyle(satellite, isSelected),
+        label: isSelected
+          ? {
+              backgroundColor: Cesium.Color.fromCssColorString('#020617').withAlpha(0.85),
+              disableDepthTestDistance: Number.POSITIVE_INFINITY,
+              fillColor: Cesium.Color.WHITE,
+              font: '13px "Segoe UI"',
+              pixelOffset: new Cesium.Cartesian2(0, -18),
+              showBackground: true,
+              style: Cesium.LabelStyle.FILL,
+              text: satellite.name,
+            }
+          : undefined,
+      });
+    }
+
+    viewer.scene.requestRender();
+  }, [filteredSatellites, selectedSatelliteId]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !selectedSatellite || previousSelectedIdRef.current === selectedSatelliteId) {
+    const viewer = viewerRef.current;
+    if (!viewer || !selectedSatellite || previousSelectedIdRef.current === selectedSatelliteId) {
       return;
     }
 
     previousSelectedIdRef.current = selectedSatelliteId;
-    map.easeTo({
-      center: [selectedSatellite.longitude, selectedSatellite.latitude],
-      duration: 1200,
-      zoom: Math.max(map.getZoom(), 1.6),
+
+    const targetEntity = viewer.entities.getById(selectedSatelliteId);
+    if (!targetEntity) {
+      return;
+    }
+
+    viewer.flyTo(targetEntity, {
+      duration: 1.25,
+      offset: new Cesium.HeadingPitchRange(
+        0,
+        -Cesium.Math.toRadians(38),
+        Math.max(2_000_000, selectedSatellite.altitudeKm * 4000),
+      ),
     });
   }, [selectedSatellite, selectedSatelliteId]);
 
