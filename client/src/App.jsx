@@ -14,7 +14,6 @@ export default function App() {
     categoryCounts,
     error,
     filteredSatellites,
-    godsEyeFigure,
     landData,
     listedSatellites,
     loading,
@@ -34,7 +33,6 @@ export default function App() {
   const {
     handleManualRefresh,
     setAutoRefreshEnabled,
-    setGodsEyeCamera,
     setPlotError,
     setRefreshSeconds,
     setSearchTerm,
@@ -81,8 +79,10 @@ export default function App() {
               />
             ) : (
               <GodsEyeGlobe
-                figure={godsEyeFigure}
-                onCameraChange={setGodsEyeCamera}
+                filteredSatellites={filteredSatellites}
+                selectedSatellite={selectedSatellite}
+                selectedSatelliteId={selectedSatelliteId}
+                onSelectSatellite={setSelectedSatelliteId}
                 onPlotError={setPlotError}
               />
             )}

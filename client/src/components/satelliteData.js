@@ -8,8 +8,6 @@ import {
 } from 'satellite.js';
 import {
   ACTIVE_SATS_URL,
-  CATEGORY_COLORS,
-  DEFAULT_CAMERA,
   EARTH_RADIUS_KM,
   LAND_GEOJSON_URL,
   LOCAL_ACTIVE_URL,
@@ -25,7 +23,6 @@ import {
 } from './constants';
 
 let landDataPromise;
-const GLOBE_SURFACE_RESOLUTION = 50;
 
 function normalizeTrackerSettings(candidate) {
   const normalizedCategories = Array.isArray(candidate?.selectedCategories)
@@ -131,190 +128,6 @@ export function projectToMap(latitude, longitude) {
   };
 }
 
-export function createSphere(radius = 1, resolution = 50) {
-  const x = [];
-  const y = [];
-  const z = [];
-
-  for (let rowIndex = 0; rowIndex < resolution; rowIndex += 1) {
-    const rowX = [];
-    const rowY = [];
-    const rowZ = [];
-    const u = (2 * Math.PI * rowIndex) / (resolution - 1);
-
-    for (let columnIndex = 0; columnIndex < resolution; columnIndex += 1) {
-      const v = (Math.PI * columnIndex) / (resolution - 1);
-      rowX.push(radius * Math.cos(u) * Math.sin(v));
-      rowY.push(radius * Math.sin(u) * Math.sin(v));
-      rowZ.push(radius * Math.cos(v));
-    }
-
-    x.push(rowX);
-    y.push(rowY);
-    z.push(rowZ);
-  }
-
-  return { x, y, z };
-}
-
-function ringCrossesAntimeridian(ring) {
-  if (!Array.isArray(ring) || ring.length < 2) {
-    return false;
-  }
-
-  for (let index = 1; index < ring.length; index += 1) {
-    if (Math.abs(ring[index][0] - ring[index - 1][0]) > 180) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function getRingBounds(ring) {
-  let minLat = 90;
-  let maxLat = -90;
-  let minLon = 180;
-  let maxLon = -180;
-
-  for (const point of ring) {
-    const [lon, lat] = point;
-    minLat = Math.min(minLat, lat);
-    maxLat = Math.max(maxLat, lat);
-    minLon = Math.min(minLon, lon);
-    maxLon = Math.max(maxLon, lon);
-  }
-
-  return { minLat, maxLat, minLon, maxLon };
-}
-
-function normalizeLongitudeForReference(longitude, referenceLongitude) {
-  let normalizedLongitude = longitude;
-
-  while (normalizedLongitude - referenceLongitude > 180) {
-    normalizedLongitude -= 360;
-  }
-
-  while (normalizedLongitude - referenceLongitude < -180) {
-    normalizedLongitude += 360;
-  }
-
-  return normalizedLongitude;
-}
-
-function pointInRing(longitude, latitude, ring) {
-  let inside = false;
-
-  for (let index = 0, previousIndex = ring.length - 1; index < ring.length; previousIndex = index, index += 1) {
-    const currentLongitude = normalizeLongitudeForReference(ring[index][0], longitude);
-    const currentLatitude = ring[index][1];
-    const previousLongitude = normalizeLongitudeForReference(ring[previousIndex][0], longitude);
-    const previousLatitude = ring[previousIndex][1];
-
-    const crossesLatitude = (currentLatitude > latitude) !== (previousLatitude > latitude);
-    if (!crossesLatitude) {
-      continue;
-    }
-
-    const intersectionLongitude =
-      ((previousLongitude - currentLongitude) * (latitude - currentLatitude)) /
-        (previousLatitude - currentLatitude) +
-      currentLongitude;
-
-    if (longitude < intersectionLongitude) {
-      inside = !inside;
-    }
-  }
-
-  return inside;
-}
-
-function preparePolygon(polygon) {
-  if (!Array.isArray(polygon) || !polygon.length || !Array.isArray(polygon[0]) || !polygon[0].length) {
-    return null;
-  }
-
-  const exterior = polygon[0];
-  const holes = polygon.slice(1).filter((ring) => Array.isArray(ring) && ring.length);
-
-  return {
-    exterior,
-    holes,
-    bounds: getRingBounds(exterior),
-    crossesAntimeridian: ringCrossesAntimeridian(exterior),
-  };
-}
-
-function polygonMayContainPoint(longitude, latitude, polygon) {
-  if (latitude < polygon.bounds.minLat || latitude > polygon.bounds.maxLat) {
-    return false;
-  }
-
-  if (!polygon.crossesAntimeridian) {
-    return longitude >= polygon.bounds.minLon && longitude <= polygon.bounds.maxLon;
-  }
-
-  return true;
-}
-
-function pointInPolygon(longitude, latitude, polygon) {
-  if (!polygonMayContainPoint(longitude, latitude, polygon)) {
-    return false;
-  }
-
-  if (!pointInRing(longitude, latitude, polygon.exterior)) {
-    return false;
-  }
-
-  return !polygon.holes.some((hole) => pointInRing(longitude, latitude, hole));
-}
-
-function buildGlobeSurfaceColor(polygons, resolution = GLOBE_SURFACE_RESOLUTION) {
-  const surfaceColor = [];
-
-  for (let rowIndex = 0; rowIndex < resolution; rowIndex += 1) {
-    const longitude = -180 + (360 * rowIndex) / (resolution - 1);
-    const colorRow = [];
-
-    for (let columnIndex = 0; columnIndex < resolution; columnIndex += 1) {
-      const latitude = 90 - (180 * columnIndex) / (resolution - 1);
-      const isLand = polygons.some((polygon) => pointInPolygon(longitude, latitude, polygon));
-
-      colorRow.push(isLand ? 0.2 : 0.85);
-    }
-
-    surfaceColor.push(colorRow);
-  }
-
-  return surfaceColor;
-}
-
-export function projectLinesToSphere(lons, lats, radius = 1.001) {
-  const x = [];
-  const y = [];
-  const z = [];
-
-  for (let index = 0; index < lons.length; index += 1) {
-    const lon = lons[index];
-    const lat = lats[index];
-
-    if (lon === null || lat === null) {
-      x.push(null);
-      y.push(null);
-      z.push(null);
-      continue;
-    }
-
-    const latRad = (lat * Math.PI) / 180;
-    const lonRad = (lon * Math.PI) / 180;
-    x.push(radius * Math.cos(latRad) * Math.cos(lonRad));
-    y.push(radius * Math.cos(latRad) * Math.sin(lonRad));
-    z.push(radius * Math.sin(latRad));
-  }
-
-  return { x, y, z };
-}
-
 function buildSvgPathFromRing(ring) {
   if (!ring?.length) {
     return '';
@@ -363,10 +176,7 @@ export async function loadLandData() {
   if (!landDataPromise) {
     landDataPromise = fetchJsonWithTimeout(LAND_GEOJSON_URL, 12000)
       .then((geoJson) => {
-        const lons = [];
-        const lats = [];
         const mapPaths = [];
-        const globePolygons = [];
 
         for (const feature of geoJson.features ?? []) {
           const geometry = feature.geometry ?? {};
@@ -386,33 +196,18 @@ export async function loadLandData() {
               continue;
             }
 
-            const preparedPolygon = preparePolygon(polygon);
-            if (preparedPolygon) {
-              globePolygons.push(preparedPolygon);
-            }
-
             const pathData = buildSvgPathFromRing(polygon[0]);
             if (pathData) {
               mapPaths.push(`${pathData} Z`);
             }
-
-            for (const point of polygon[0]) {
-              lons.push(point[0]);
-              lats.push(point[1]);
-            }
-
-            lons.push(null);
-            lats.push(null);
           }
         }
 
         return {
-          sphere: projectLinesToSphere(lons, lats),
           mapPaths,
-          surfaceColor: buildGlobeSurfaceColor(globePolygons),
         };
       })
-      .catch(() => ({ sphere: { x: [], y: [], z: [] }, mapPaths: [], surfaceColor: null }));
+      .catch(() => ({ mapPaths: [] }));
   }
 
   return landDataPromise;
@@ -550,128 +345,6 @@ export function formatTimestamp(date) {
     minute: '2-digit',
     second: '2-digit',
   }).format(date);
-}
-
-export function extractCamera(relayoutData) {
-  if (!relayoutData || typeof relayoutData !== 'object') {
-    return null;
-  }
-  if (relayoutData['scene.camera']) {
-    return relayoutData['scene.camera'];
-  }
-  if (relayoutData.scene?.camera) {
-    return relayoutData.scene.camera;
-  }
-  return null;
-}
-
-export function buildGodsEyeFigure(selectedCategories, satelliteData, landData, camera, selectedSatelliteId) {
-  const earth = createSphere(1, GLOBE_SURFACE_RESOLUTION);
-  const filteredSatellites = satelliteData.satellites.filter((satellite) =>
-    selectedCategories.includes(satellite.category),
-  );
-  const selectedSatellite = filteredSatellites.find((satellite) => satellite.id === selectedSatelliteId) ?? null;
-
-  const figure = {
-    data: [
-      {
-        type: 'surface',
-        x: earth.x,
-        y: earth.y,
-        z: earth.z,
-        colorscale: [
-          [0, '#32593f'],
-          [0.22, '#5f8f54'],
-          [0.221, '#14314a'],
-          [1, '#214a72'],
-        ],
-        ...(landData.surfaceColor ? { surfacecolor: landData.surfaceColor, cmin: 0, cmax: 1 } : {}),
-        showscale: false,
-        opacity: 0.9,
-        lighting: { ambient: 0.65, diffuse: 0.9, roughness: 0.95, specular: 0.1 },
-        lightposition: { x: 200, y: 80, z: 120 },
-        name: 'Earth basemap',
-        hoverinfo: 'skip',
-      },
-      {
-        type: 'scatter3d',
-        x: landData.sphere.x,
-        y: landData.sphere.y,
-        z: landData.sphere.z,
-        mode: 'lines',
-        line: { color: '#d9f99d', width: 2 },
-        hoverinfo: 'skip',
-        name: 'Coastlines',
-      },
-      {
-        type: 'scatter3d',
-        x: filteredSatellites.map((satellite) => satellite.orbitX),
-        y: filteredSatellites.map((satellite) => satellite.orbitY),
-        z: filteredSatellites.map((satellite) => satellite.orbitZ),
-        mode: 'markers',
-        marker: {
-          size: 2.6,
-          color: filteredSatellites.map((satellite) => CATEGORY_COLORS[satellite.category] ?? CATEGORY_COLORS.Other),
-          opacity: 0.95,
-        },
-        text: filteredSatellites.map((satellite) => `${satellite.name} (${satellite.category})`),
-        hovertemplate: '%{text}<extra></extra>',
-        name: 'Satellites',
-      },
-    ],
-    layout: {
-      title: "God's Eye Satellite Globe",
-      margin: { l: 0, r: 0, b: 0, t: 44 },
-      paper_bgcolor: '#030712',
-      plot_bgcolor: '#030712',
-      legend: {
-        font: { color: '#f8fafc' },
-        bgcolor: 'rgba(3, 7, 18, 0.55)',
-      },
-      scene: {
-        xaxis: { visible: false },
-        yaxis: { visible: false },
-        zaxis: { visible: false },
-        bgcolor: '#030712',
-        aspectmode: 'data',
-        uirevision: 'keep-gods-eye-camera',
-        camera: camera ?? DEFAULT_CAMERA,
-      },
-    },
-    config: {
-      displaylogo: false,
-      responsive: true,
-      scrollZoom: true,
-    },
-  };
-
-  if (satelliteData.iss) {
-    figure.data.push({
-      type: 'scatter3d',
-      x: [satelliteData.iss.orbitX],
-      y: [satelliteData.iss.orbitY],
-      z: [satelliteData.iss.orbitZ],
-      mode: 'markers',
-      marker: { size: 7, color: '#fde047', symbol: 'diamond' },
-      name: 'ISS',
-      hovertemplate: 'ISS<extra></extra>',
-    });
-  }
-
-  if (selectedSatellite) {
-    figure.data.push({
-      type: 'scatter3d',
-      x: [selectedSatellite.orbitX],
-      y: [selectedSatellite.orbitY],
-      z: [selectedSatellite.orbitZ],
-      mode: 'markers',
-      marker: { size: 10, color: '#ffffff', symbol: 'circle-open' },
-      name: 'Selected',
-      hovertemplate: `${selectedSatellite.name}<extra></extra>`,
-    });
-  }
-
-  return figure;
 }
 
 export async function loadTrackerSettings() {

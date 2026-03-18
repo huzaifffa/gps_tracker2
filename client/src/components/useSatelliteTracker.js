@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  DEFAULT_CAMERA,
   REFRESH_OPTIONS,
   SATELLITE_CATEGORIES,
   VIEW_MODES,
 } from './constants';
 import {
-  buildGodsEyeFigure,
   buildSatelliteSnapshot,
   formatTimestamp,
   loadLandData,
@@ -23,8 +21,7 @@ export function useSatelliteTracker() {
   const [selectedSatelliteId, setSelectedSatelliteId] = useState('');
   const [viewMode, setViewMode] = useState(VIEW_MODES.map);
   const [feeds, setFeeds] = useState(null);
-  const [landData, setLandData] = useState({ sphere: { x: [], y: [], z: [] }, mapPaths: [] });
-  const [godsEyeCamera, setGodsEyeCamera] = useState(DEFAULT_CAMERA);
+  const [landData, setLandData] = useState({ mapPaths: [] });
   const [plotError, setPlotError] = useState('');
   const [satelliteData, setSatelliteData] = useState({
     satellites: [],
@@ -224,18 +221,12 @@ export function useSatelliteTracker() {
     ? `Last refreshed: ${formatTimestamp(satelliteData.lastRefresh)} | Showing ${filteredSatellites.length} / ${satelliteData.totalCount} satellites.`
     : 'Loading satellite positions...';
 
-  const godsEyeFigure = useMemo(
-    () => buildGodsEyeFigure(selectedCategories, satelliteData, landData, godsEyeCamera, selectedSatelliteId),
-    [godsEyeCamera, landData, satelliteData, selectedCategories, selectedSatelliteId],
-  );
-
   return {
     state: {
       autoRefreshEnabled,
       categoryCounts,
       error,
       filteredSatellites,
-      godsEyeFigure,
       landData,
       listedSatellites,
       loading,
@@ -254,7 +245,6 @@ export function useSatelliteTracker() {
     actions: {
       handleManualRefresh,
       setAutoRefreshEnabled,
-      setGodsEyeCamera,
       setPlotError,
       setRefreshSeconds,
       setSearchTerm,

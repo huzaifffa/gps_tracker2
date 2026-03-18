@@ -1,0 +1,17 @@
+{
+  "selectedCategories": [
+    "Stations",
+    "Starlink",
+    "OneWeb",
+    "GPS",
+    "GLONASS",
+    "Galileo",
+    "Iridium",
+    "Weather",
+    "Other"
+  ],
+  "selectedSatelliteName": "ISS (ZARYA)",
+  "autoRefreshEnabled": true,
+  "refreshSeconds": 10,
+  "viewMode": "map"
+}
