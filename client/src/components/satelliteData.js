@@ -25,6 +25,7 @@ import {
 } from './constants';
 
 let landDataPromise;
+const GLOBE_SURFACE_RESOLUTION = 50;
 
 function normalizeTrackerSettings(candidate) {
   const normalizedCategories = Array.isArray(candidate?.selectedCategories)
@@ -156,6 +157,138 @@ export function createSphere(radius = 1, resolution = 50) {
   return { x, y, z };
 }
 
+function ringCrossesAntimeridian(ring) {
+  if (!Array.isArray(ring) || ring.length < 2) {
+    return false;
+  }
+
+  for (let index = 1; index < ring.length; index += 1) {
+    if (Math.abs(ring[index][0] - ring[index - 1][0]) > 180) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function getRingBounds(ring) {
+  let minLat = 90;
+  let maxLat = -90;
+  let minLon = 180;
+  let maxLon = -180;
+
+  for (const point of ring) {
+    const [lon, lat] = point;
+    minLat = Math.min(minLat, lat);
+    maxLat = Math.max(maxLat, lat);
+    minLon = Math.min(minLon, lon);
+    maxLon = Math.max(maxLon, lon);
+  }
+
+  return { minLat, maxLat, minLon, maxLon };
+}
+
+function normalizeLongitudeForReference(longitude, referenceLongitude) {
+  let normalizedLongitude = longitude;
+
+  while (normalizedLongitude - referenceLongitude > 180) {
+    normalizedLongitude -= 360;
+  }
+
+  while (normalizedLongitude - referenceLongitude < -180) {
+    normalizedLongitude += 360;
+  }
+
+  return normalizedLongitude;
+}
+
+function pointInRing(longitude, latitude, ring) {
+  let inside = false;
+
+  for (let index = 0, previousIndex = ring.length - 1; index < ring.length; previousIndex = index, index += 1) {
+    const currentLongitude = normalizeLongitudeForReference(ring[index][0], longitude);
+    const currentLatitude = ring[index][1];
+    const previousLongitude = normalizeLongitudeForReference(ring[previousIndex][0], longitude);
+    const previousLatitude = ring[previousIndex][1];
+
+    const crossesLatitude = (currentLatitude > latitude) !== (previousLatitude > latitude);
+    if (!crossesLatitude) {
+      continue;
+    }
+
+    const intersectionLongitude =
+      ((previousLongitude - currentLongitude) * (latitude - currentLatitude)) /
+        (previousLatitude - currentLatitude) +
+      currentLongitude;
+
+    if (longitude < intersectionLongitude) {
+      inside = !inside;
+    }
+  }
+
+  return inside;
+}
+
+function preparePolygon(polygon) {
+  if (!Array.isArray(polygon) || !polygon.length || !Array.isArray(polygon[0]) || !polygon[0].length) {
+    return null;
+  }
+
+  const exterior = polygon[0];
+  const holes = polygon.slice(1).filter((ring) => Array.isArray(ring) && ring.length);
+
+  return {
+    exterior,
+    holes,
+    bounds: getRingBounds(exterior),
+    crossesAntimeridian: ringCrossesAntimeridian(exterior),
+  };
+}
+
+function polygonMayContainPoint(longitude, latitude, polygon) {
+  if (latitude < polygon.bounds.minLat || latitude > polygon.bounds.maxLat) {
+    return false;
+  }
+
+  if (!polygon.crossesAntimeridian) {
+    return longitude >= polygon.bounds.minLon && longitude <= polygon.bounds.maxLon;
+  }
+
+  return true;
+}
+
+function pointInPolygon(longitude, latitude, polygon) {
+  if (!polygonMayContainPoint(longitude, latitude, polygon)) {
+    return false;
+  }
+
+  if (!pointInRing(longitude, latitude, polygon.exterior)) {
+    return false;
+  }
+
+  return !polygon.holes.some((hole) => pointInRing(longitude, latitude, hole));
+}
+
+function buildGlobeSurfaceColor(polygons, resolution = GLOBE_SURFACE_RESOLUTION) {
+  const surfaceColor = [];
+
+  for (let rowIndex = 0; rowIndex < resolution; rowIndex += 1) {
+    const longitude = -180 + (360 * rowIndex) / (resolution - 1);
+    const colorRow = [];
+
+    for (let columnIndex = 0; columnIndex < resolution; columnIndex += 1) {
+      const latitude = 90 - (180 * columnIndex) / (resolution - 1);
+      const isLand = polygons.some((polygon) => pointInPolygon(longitude, latitude, polygon));
+
+      colorRow.push(isLand ? 0.2 : 0.85);
+    }
+
+    surfaceColor.push(colorRow);
+  }
+
+  return surfaceColor;
+}
+
 export function projectLinesToSphere(lons, lats, radius = 1.001) {
   const x = [];
   const y = [];
@@ -233,6 +366,7 @@ export async function loadLandData() {
         const lons = [];
         const lats = [];
         const mapPaths = [];
+        const globePolygons = [];
 
         for (const feature of geoJson.features ?? []) {
           const geometry = feature.geometry ?? {};
@@ -241,15 +375,20 @@ export async function loadLandData() {
             continue;
           }
 
-          const polygons = geometry.type === 'Polygon'
+          const geometryPolygons = geometry.type === 'Polygon'
             ? [coordinates]
             : geometry.type === 'MultiPolygon'
               ? coordinates
               : [];
 
-          for (const polygon of polygons) {
+          for (const polygon of geometryPolygons) {
             if (!polygon?.length) {
               continue;
+            }
+
+            const preparedPolygon = preparePolygon(polygon);
+            if (preparedPolygon) {
+              globePolygons.push(preparedPolygon);
             }
 
             const pathData = buildSvgPathFromRing(polygon[0]);
@@ -270,9 +409,10 @@ export async function loadLandData() {
         return {
           sphere: projectLinesToSphere(lons, lats),
           mapPaths,
+          surfaceColor: buildGlobeSurfaceColor(globePolygons),
         };
       })
-      .catch(() => ({ sphere: { x: [], y: [], z: [] }, mapPaths: [] }));
+      .catch(() => ({ sphere: { x: [], y: [], z: [] }, mapPaths: [], surfaceColor: null }));
   }
 
   return landDataPromise;
@@ -426,7 +566,7 @@ export function extractCamera(relayoutData) {
 }
 
 export function buildGodsEyeFigure(selectedCategories, satelliteData, landData, camera, selectedSatelliteId) {
-  const earth = createSphere();
+  const earth = createSphere(1, GLOBE_SURFACE_RESOLUTION);
   const filteredSatellites = satelliteData.satellites.filter((satellite) =>
     selectedCategories.includes(satellite.category),
   );
@@ -439,10 +579,18 @@ export function buildGodsEyeFigure(selectedCategories, satelliteData, landData, 
         x: earth.x,
         y: earth.y,
         z: earth.z,
-        colorscale: [[0, '#1a1a2e'], [1, '#16213e']],
+        colorscale: [
+          [0, '#32593f'],
+          [0.22, '#5f8f54'],
+          [0.221, '#14314a'],
+          [1, '#214a72'],
+        ],
+        ...(landData.surfaceColor ? { surfacecolor: landData.surfaceColor, cmin: 0, cmax: 1 } : {}),
         showscale: false,
-        opacity: 0.42,
-        name: 'Ocean',
+        opacity: 0.9,
+        lighting: { ambient: 0.65, diffuse: 0.9, roughness: 0.95, specular: 0.1 },
+        lightposition: { x: 200, y: 80, z: 120 },
+        name: 'Earth basemap',
         hoverinfo: 'skip',
       },
       {
@@ -451,9 +599,9 @@ export function buildGodsEyeFigure(selectedCategories, satelliteData, landData, 
         y: landData.sphere.y,
         z: landData.sphere.z,
         mode: 'lines',
-        line: { color: '#00ff7a', width: 1 },
+        line: { color: '#d9f99d', width: 2 },
         hoverinfo: 'skip',
-        name: 'Land',
+        name: 'Coastlines',
       },
       {
         type: 'scatter3d',
