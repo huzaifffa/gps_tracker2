@@ -12,8 +12,10 @@
   "license": "ISC",
   "description": "React satellite tracker",
   "dependencies": {
+    "plotly.js-dist-min": "2.35.3",
     "react": "18.3.1",
     "react-dom": "18.3.1",
+    "react-plotly.js": "^2.6.0",
     "satellite.js": "^6.0.1"
   },
   "devDependencies": {

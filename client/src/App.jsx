@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
+import createPlotlyComponent from 'react-plotly.js/factory';
+import Plotly from 'plotly.js-dist-min';
 import {
   degreesLat,
   degreesLong,
@@ -8,11 +10,14 @@ import {
   twoline2satrec,
 } from 'satellite.js';
 
+const Plot = createPlotlyComponent(Plotly);
+
 const EARTH_RADIUS_KM = 6371;
 const MAP_WIDTH = 1200;
 const MAP_HEIGHT = 600;
 const STATIONS_URL = 'https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle';
 const ACTIVE_SATS_URL = 'https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=tle';
+const LAND_GEOJSON_URL = 'https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json';
 const LOCAL_STATIONS_URL = '/data/stations.tle';
 const LOCAL_ACTIVE_URL = '/data/active.tle';
 const SATELLITE_CATEGORIES = [
@@ -42,6 +47,23 @@ const CATEGORY_COLORS = {
   Weather: '#22c55e',
   Other: '#cbd5e1',
 };
+const DEFAULT_CAMERA = { eye: { x: 1.5, y: 1.5, z: 1.5 } };
+
+let landLinesPromise;
+
+function buildSvgPathFromRing(ring) {
+  if (!ring?.length) {
+    return '';
+  }
+
+  return ring
+    .map((point, index) => {
+      const x = ((point[0] + 180) / 360) * MAP_WIDTH;
+      const y = ((90 - point[1]) / 180) * MAP_HEIGHT;
+      return `${index === 0 ? 'M' : 'L'} ${x} ${y}`;
+    })
+    .join(' ');
+}
 
 function classifySatellite(name) {
   const upper = name.toUpperCase();
@@ -74,7 +96,6 @@ function classifySatellite(name) {
   return 'Other';
 }
 
-
 function parseTleText(tleText) {
   const lines = tleText
     .split(/\r?\n/)
@@ -84,6 +105,7 @@ function parseTleText(tleText) {
 
   for (let index = 0; index < lines.length - 2; index += 3) {
     satellites.push({
+      id: `${lines[index + 1].trim()}-${lines[index + 2].trim()}`,
       name: lines[index].trim(),
       line1: lines[index + 1].trim(),
       line2: lines[index + 2].trim(),
@@ -109,9 +131,9 @@ function computeSatellitePosition(satellite, now) {
   const lonRad = (longitude * Math.PI) / 180;
 
   return {
-    x: radius * Math.cos(latRad) * Math.cos(lonRad),
-    y: radius * Math.cos(latRad) * Math.sin(lonRad),
-    z: radius * Math.sin(latRad),
+    orbitX: radius * Math.cos(latRad) * Math.cos(lonRad),
+    orbitY: radius * Math.cos(latRad) * Math.sin(lonRad),
+    orbitZ: radius * Math.sin(latRad),
     latitude,
     longitude,
     altitudeKm: geodetic.height,
@@ -120,60 +142,62 @@ function computeSatellitePosition(satellite, now) {
 
 function projectToMap(latitude, longitude) {
   return {
-    x: ((longitude + 180) / 360) * MAP_WIDTH,
-    y: ((90 - latitude) / 180) * MAP_HEIGHT,
+    mapX: ((longitude + 180) / 360) * MAP_WIDTH,
+    mapY: ((90 - latitude) / 180) * MAP_HEIGHT,
   };
 }
 
-function buildSatelliteSnapshot(feeds, now) {
-  const stationRecords = feeds.stations
-    .map((satellite) => {
-      const position = computeSatellitePosition(satellite, now);
-      if (!position) {
-        return null;
-      }
+function createSphere(radius = 1, resolution = 50) {
+  const x = [];
+  const y = [];
+  const z = [];
 
-      const mapPoint = projectToMap(position.latitude, position.longitude);
+  for (let rowIndex = 0; rowIndex < resolution; rowIndex += 1) {
+    const rowX = [];
+    const rowY = [];
+    const rowZ = [];
+    const u = (2 * Math.PI * rowIndex) / (resolution - 1);
 
-      return {
-        ...position,
-        ...mapPoint,
-        name: satellite.name,
-        category: classifySatellite(satellite.name),
-      };
-    })
-    .filter(Boolean);
+    for (let columnIndex = 0; columnIndex < resolution; columnIndex += 1) {
+      const v = (Math.PI * columnIndex) / (resolution - 1);
+      rowX.push(radius * Math.cos(u) * Math.sin(v));
+      rowY.push(radius * Math.sin(u) * Math.sin(v));
+      rowZ.push(radius * Math.cos(v));
+    }
 
-  const activeRecords = feeds.active
-    .map((satellite) => {
-      const position = computeSatellitePosition(satellite, now);
-      if (!position) {
-        return null;
-      }
+    x.push(rowX);
+    y.push(rowY);
+    z.push(rowZ);
+  }
 
-      const mapPoint = projectToMap(position.latitude, position.longitude);
+  return { x, y, z };
+}
 
-      return {
-        ...position,
-        ...mapPoint,
-        name: satellite.name,
-        category: classifySatellite(satellite.name),
-      };
-    })
-    .filter(Boolean);
+function projectLinesToSphere(lons, lats, radius = 1.001) {
+  const x = [];
+  const y = [];
+  const z = [];
 
-  const stationNames = new Set(stationRecords.map((satellite) => satellite.name));
-  const satellites = [
-    ...stationRecords,
-    ...activeRecords.filter((satellite) => !stationNames.has(satellite.name)),
-  ];
+  for (let index = 0; index < lons.length; index += 1) {
+    const lon = lons[index];
+    const lat = lats[index];
 
-  return {
-    satellites,
-    iss: stationRecords.find((satellite) => satellite.name.toUpperCase().includes('ISS')) ?? null,
-    lastRefresh: now,
-    totalCount: satellites.length,
-  };
+    if (lon === null || lat === null) {
+      x.push(null);
+      y.push(null);
+      z.push(null);
+      continue;
+    }
+
+    const latRad = (lat * Math.PI) / 180;
+    const lonRad = (lon * Math.PI) / 180;
+
+    x.push(radius * Math.cos(latRad) * Math.cos(lonRad));
+    y.push(radius * Math.cos(latRad) * Math.sin(lonRad));
+    z.push(radius * Math.sin(latRad));
+  }
+
+  return { x, y, z };
 }
 
 async function fetchTextWithTimeout(url, timeoutMs) {
@@ -189,6 +213,74 @@ async function fetchTextWithTimeout(url, timeoutMs) {
   } finally {
     window.clearTimeout(timerId);
   }
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs) {
+  const controller = new AbortController();
+  const timerId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal, cache: 'force-cache' });
+    if (!response.ok) {
+      throw new Error(`Request failed with ${response.status}`);
+    }
+    return await response.json();
+  } finally {
+    window.clearTimeout(timerId);
+  }
+}
+
+async function loadLandLines() {
+  if (!landLinesPromise) {
+    landLinesPromise = fetchJsonWithTimeout(LAND_GEOJSON_URL, 12000)
+      .then((geoJson) => {
+        const lons = [];
+        const lats = [];
+        const mapPaths = [];
+
+        for (const feature of geoJson.features ?? []) {
+          const geometry = feature.geometry ?? {};
+          const coordinates = geometry.coordinates;
+
+          if (!coordinates) {
+            continue;
+          }
+
+          const polygons = geometry.type === 'Polygon'
+            ? [coordinates]
+            : geometry.type === 'MultiPolygon'
+              ? coordinates
+              : [];
+
+          for (const polygon of polygons) {
+            if (!polygon?.length) {
+              continue;
+            }
+
+            const pathData = buildSvgPathFromRing(polygon[0]);
+            if (pathData) {
+              mapPaths.push(`${pathData} Z`);
+            }
+
+            for (const point of polygon[0]) {
+              lons.push(point[0]);
+              lats.push(point[1]);
+            }
+
+            lons.push(null);
+            lats.push(null);
+          }
+        }
+
+        return {
+          sphere: projectLinesToSphere(lons, lats),
+          mapPaths,
+        };
+      })
+      .catch(() => ({ sphere: { x: [], y: [], z: [] }, mapPaths: [] }));
+  }
+
+  return landLinesPromise;
 }
 
 async function loadTleFeed(remoteUrl, localUrl, label) {
@@ -228,9 +320,53 @@ async function loadTleFeeds() {
   };
 }
 
-function formatCoordinate(value, positive, negative) {
-  const suffix = value >= 0 ? positive : negative;
-  return `${Math.abs(value).toFixed(1)}° ${suffix}`;
+function buildSatelliteSnapshot(feeds, now) {
+  const stationRecords = feeds.stations
+    .map((satellite) => {
+      const position = computeSatellitePosition(satellite, now);
+      if (!position) {
+        return null;
+      }
+
+      return {
+        ...position,
+        ...projectToMap(position.latitude, position.longitude),
+        id: satellite.id,
+        name: satellite.name,
+        category: classifySatellite(satellite.name),
+      };
+    })
+    .filter(Boolean);
+
+  const activeRecords = feeds.active
+    .map((satellite) => {
+      const position = computeSatellitePosition(satellite, now);
+      if (!position) {
+        return null;
+      }
+
+      return {
+        ...position,
+        ...projectToMap(position.latitude, position.longitude),
+        id: satellite.id,
+        name: satellite.name,
+        category: classifySatellite(satellite.name),
+      };
+    })
+    .filter(Boolean);
+
+  const stationNames = new Set(stationRecords.map((satellite) => satellite.name));
+  const satellites = [
+    ...stationRecords,
+    ...activeRecords.filter((satellite) => !stationNames.has(satellite.name)),
+  ];
+
+  return {
+    satellites,
+    iss: stationRecords.find((satellite) => satellite.name.toUpperCase().includes('ISS')) ?? null,
+    lastRefresh: now,
+    totalCount: satellites.length,
+  };
 }
 
 function renderGridLines() {
@@ -249,29 +385,9 @@ function renderGridLines() {
   return lines;
 }
 
-function renderGodsEyeGuides(size, earthRadius, maxOrbitRadius) {
-  const center = size / 2;
-  const guides = [];
-  const ringCount = 3;
-
-  for (let index = 1; index <= ringCount; index += 1) {
-    const ratio = index / ringCount;
-    const radius = earthRadius + (maxOrbitRadius - earthRadius) * ratio;
-    guides.push(
-      <circle
-        key={`orbit-guide-${index}`}
-        cx={center}
-        cy={center}
-        r={radius}
-        className="gods-eye-guide"
-      />,
-    );
-  }
-
-  guides.push(<line key="gods-eye-axis-x" x1={0} y1={center} x2={size} y2={center} className="gods-eye-axis" />);
-  guides.push(<line key="gods-eye-axis-y" x1={center} y1={0} x2={center} y2={size} className="gods-eye-axis" />);
-
-  return guides;
+function formatCoordinate(value, positive, negative) {
+  const suffix = value >= 0 ? positive : negative;
+  return `${Math.abs(value).toFixed(1)}° ${suffix}`;
 }
 
 function formatTimestamp(date) {
@@ -289,14 +405,131 @@ function formatTimestamp(date) {
   }).format(date);
 }
 
+function extractCamera(relayoutData) {
+  if (!relayoutData || typeof relayoutData !== 'object') {
+    return null;
+  }
+  if (relayoutData['scene.camera']) {
+    return relayoutData['scene.camera'];
+  }
+  if (relayoutData.scene?.camera) {
+    return relayoutData.scene.camera;
+  }
+  return null;
+}
+
+function buildGodsEyeFigure(selectedCategories, satelliteData, landData, camera, selectedSatelliteId) {
+  const earth = createSphere();
+  const filteredSatellites = satelliteData.satellites.filter((satellite) =>
+    selectedCategories.includes(satellite.category),
+  );
+  const selectedSatellite = filteredSatellites.find((satellite) => satellite.id === selectedSatelliteId) ?? null;
+
+  const figure = {
+    data: [
+      {
+        type: 'surface',
+        x: earth.x,
+        y: earth.y,
+        z: earth.z,
+        colorscale: [[0, '#1a1a2e'], [1, '#16213e']],
+        showscale: false,
+        opacity: 0.42,
+        name: 'Ocean',
+        hoverinfo: 'skip',
+      },
+      {
+        type: 'scatter3d',
+        x: landData.sphere.x,
+        y: landData.sphere.y,
+        z: landData.sphere.z,
+        mode: 'lines',
+        line: { color: '#00ff7a', width: 1 },
+        hoverinfo: 'skip',
+        name: 'Land',
+      },
+      {
+        type: 'scatter3d',
+        x: filteredSatellites.map((satellite) => satellite.orbitX),
+        y: filteredSatellites.map((satellite) => satellite.orbitY),
+        z: filteredSatellites.map((satellite) => satellite.orbitZ),
+        mode: 'markers',
+        marker: {
+          size: 2.6,
+          color: filteredSatellites.map((satellite) => CATEGORY_COLORS[satellite.category] ?? CATEGORY_COLORS.Other),
+          opacity: 0.95,
+        },
+        text: filteredSatellites.map((satellite) => `${satellite.name} (${satellite.category})`),
+        hovertemplate: '%{text}<extra></extra>',
+        name: 'Satellites',
+      },
+    ],
+    layout: {
+      title: "God's Eye Satellite Globe",
+      margin: { l: 0, r: 0, b: 0, t: 44 },
+      paper_bgcolor: '#030712',
+      plot_bgcolor: '#030712',
+      legend: {
+        font: { color: '#f8fafc' },
+        bgcolor: 'rgba(3, 7, 18, 0.55)',
+      },
+      scene: {
+        xaxis: { visible: false },
+        yaxis: { visible: false },
+        zaxis: { visible: false },
+        bgcolor: '#030712',
+        aspectmode: 'data',
+        uirevision: 'keep-gods-eye-camera',
+        camera: camera ?? DEFAULT_CAMERA,
+      },
+    },
+    config: {
+      displaylogo: false,
+      responsive: true,
+      scrollZoom: true,
+    },
+  };
+
+  if (satelliteData.iss) {
+    figure.data.push({
+      type: 'scatter3d',
+      x: [satelliteData.iss.orbitX],
+      y: [satelliteData.iss.orbitY],
+      z: [satelliteData.iss.orbitZ],
+      mode: 'markers',
+      marker: { size: 7, color: '#fde047', symbol: 'diamond' },
+      name: 'ISS',
+      hovertemplate: 'ISS<extra></extra>',
+    });
+  }
+
+  if (selectedSatellite) {
+    figure.data.push({
+      type: 'scatter3d',
+      x: [selectedSatellite.orbitX],
+      y: [selectedSatellite.orbitY],
+      z: [selectedSatellite.orbitZ],
+      mode: 'markers',
+      marker: { size: 10, color: '#ffffff', symbol: 'circle-open' },
+      name: 'Selected',
+      hovertemplate: `${selectedSatellite.name}<extra></extra>`,
+    });
+  }
+
+  return figure;
+}
+
 export default function App() {
   const [selectedCategories, setSelectedCategories] = useState(SATELLITE_CATEGORIES);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   const [refreshSeconds, setRefreshSeconds] = useState(10);
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedSatelliteName, setSelectedSatelliteName] = useState('');
+  const [selectedSatelliteId, setSelectedSatelliteId] = useState('');
   const [viewMode, setViewMode] = useState(VIEW_MODES.map);
   const [feeds, setFeeds] = useState(null);
+  const [landData, setLandData] = useState({ sphere: { x: [], y: [], z: [] }, mapPaths: [] });
+  const [godsEyeCamera, setGodsEyeCamera] = useState(DEFAULT_CAMERA);
+  const [plotError, setPlotError] = useState('');
   const [satelliteData, setSatelliteData] = useState({
     satellites: [],
     iss: null,
@@ -317,15 +550,18 @@ export default function App() {
       setError('');
 
       try {
-        const nextFeeds = await loadTleFeeds();
+        const [nextFeeds, nextLandData] = await Promise.all([
+          loadTleFeeds(),
+          loadLandLines(),
+        ]);
 
         if (cancelled) {
           return;
         }
 
         const nextData = buildSatelliteSnapshot(nextFeeds, new Date());
-
         setFeeds(nextFeeds);
+        setLandData(nextLandData);
         setSourceSummary(nextFeeds.sourceSummary);
         setSourceNotes(nextFeeds.sourceNotes);
         setSatelliteData(nextData);
@@ -402,10 +638,7 @@ export default function App() {
       }
 
       const query = searchTerm.trim().toLowerCase();
-      return (
-        satellite.name.toLowerCase().includes(query) ||
-        satellite.category.toLowerCase().includes(query)
-      );
+      return satellite.name.toLowerCase().includes(query) || satellite.category.toLowerCase().includes(query);
     })
     .sort((left, right) => {
       const leftIsIss = left.name === satelliteData.iss?.name ? 1 : 0;
@@ -417,9 +650,7 @@ export default function App() {
 
       return left.name.localeCompare(right.name);
     });
-  const selectedSatellite = satelliteData.satellites.find(
-    (satellite) => satellite.name === selectedSatelliteName,
-  );
+  const selectedSatellite = satelliteData.satellites.find((satellite) => satellite.id === selectedSatelliteId) ?? null;
   const categoryCounts = SATELLITE_CATEGORIES.map((category) => ({
     category,
     count: satelliteData.satellites.filter((satellite) => satellite.category === category).length,
@@ -427,26 +658,13 @@ export default function App() {
   const status = satelliteData.lastRefresh
     ? `Last refreshed: ${formatTimestamp(satelliteData.lastRefresh)} | Showing ${filteredSatellites.length} / ${satelliteData.totalCount} satellites.`
     : 'Loading satellite positions...';
-  const godsEyeSize = 960;
-  const godsEyeCenter = godsEyeSize / 2;
-  const maxSatelliteRadius = Math.max(
-    1.15,
-    ...filteredSatellites.map((satellite) => Math.sqrt((satellite.x ** 2) + (satellite.y ** 2))),
+  const godsEyeFigure = buildGodsEyeFigure(
+    selectedCategories,
+    satelliteData,
+    landData,
+    godsEyeCamera,
+    selectedSatelliteId,
   );
-  const earthDiskRadius = godsEyeSize * 0.18;
-  const maxOrbitRadius = godsEyeSize * 0.46;
-  const godsEyePoints = filteredSatellites.map((satellite) => {
-    const orbitRadius = Math.sqrt((satellite.x ** 2) + (satellite.y ** 2));
-    const scale = orbitRadius / maxSatelliteRadius;
-
-    return {
-      ...satellite,
-      overheadX: godsEyeCenter + ((satellite.x / maxSatelliteRadius) * maxOrbitRadius),
-      overheadY: godsEyeCenter - ((satellite.y / maxSatelliteRadius) * maxOrbitRadius),
-      orbitBandRadius: earthDiskRadius + ((maxOrbitRadius - earthDiskRadius) * scale),
-    };
-  });
-  const selectedGodsEyePoint = godsEyePoints.find((satellite) => satellite.name === selectedSatelliteName) ?? null;
 
   return (
     <div className="app-shell">
@@ -559,6 +777,7 @@ export default function App() {
         </div>
 
         {error ? <div className="error-banner">{error}</div> : null}
+        {plotError ? <div className="error-banner">Plot error: {plotError}</div> : null}
 
         <div className="content-grid">
           <div className="map-frame">
@@ -572,14 +791,17 @@ export default function App() {
                 </defs>
 
                 <rect x="0" y="0" width={MAP_WIDTH} height={MAP_HEIGHT} rx="24" className="map-backdrop" />
+                {landData.mapPaths.map((pathData, index) => (
+                  <path key={`world-path-${index}`} d={pathData} className="world-basemap" />
+                ))}
                 {renderGridLines()}
                 <line x1="0" y1={MAP_HEIGHT / 2} x2={MAP_WIDTH} y2={MAP_HEIGHT / 2} className="equator-line" />
 
                 {filteredSatellites.map((satellite) => (
                   <circle
-                    key={`${satellite.name}-${satellite.category}`}
-                    cx={satellite.x}
-                    cy={satellite.y}
+                    key={satellite.id}
+                    cx={satellite.mapX}
+                    cy={satellite.mapY}
                     r={satellite.name === satelliteData.iss?.name ? 3.5 : 1.4}
                     fill={CATEGORY_COLORS[satellite.category] ?? CATEGORY_COLORS.Other}
                     opacity={satellite.name === satelliteData.iss?.name ? 1 : 0.82}
@@ -592,57 +814,34 @@ export default function App() {
 
                 {selectedSatellite ? (
                   <circle
-                    cx={selectedSatellite.x}
-                    cy={selectedSatellite.y}
+                    cx={selectedSatellite.mapX}
+                    cy={selectedSatellite.mapY}
                     r="8"
                     className="selected-ring"
                   />
                 ) : null}
               </svg>
             ) : (
-              <svg className="world-map gods-eye-map" viewBox={`0 0 ${godsEyeSize} ${godsEyeSize}`} role="img" aria-label="Top-down satellite view over Earth">
-                <defs>
-                  <radialGradient id="godsEyeBackground" cx="50%" cy="48%" r="65%">
-                    <stop offset="0%" stopColor="#12324a" />
-                    <stop offset="100%" stopColor="#020617" />
-                  </radialGradient>
-                  <radialGradient id="earthDiskGradient" cx="45%" cy="35%" r="65%">
-                    <stop offset="0%" stopColor="#1d4ed8" />
-                    <stop offset="100%" stopColor="#0f172a" />
-                  </radialGradient>
-                </defs>
-
-                <rect x="0" y="0" width={godsEyeSize} height={godsEyeSize} rx="28" className="gods-eye-backdrop" />
-                {renderGodsEyeGuides(godsEyeSize, earthDiskRadius, maxOrbitRadius)}
-                <circle cx={godsEyeCenter} cy={godsEyeCenter} r={earthDiskRadius} className="earth-disk" />
-                <text x={godsEyeCenter} y={godsEyeCenter - earthDiskRadius - 22} textAnchor="middle" className="gods-eye-label">
-                  North Pole Overhead View
-                </text>
-
-                {godsEyePoints.map((satellite) => (
-                  <circle
-                    key={`${satellite.name}-${satellite.category}-overhead`}
-                    cx={satellite.overheadX}
-                    cy={satellite.overheadY}
-                    r={satellite.name === satelliteData.iss?.name ? 5 : 2.5}
-                    fill={CATEGORY_COLORS[satellite.category] ?? CATEGORY_COLORS.Other}
-                    opacity={satellite.name === satelliteData.iss?.name ? 1 : 0.88}
-                  >
-                    <title>
-                      {`${satellite.name} | ${satellite.category} | ${satellite.altitudeKm.toFixed(0)} km altitude | ${formatCoordinate(satellite.latitude, 'N', 'S')} | ${formatCoordinate(satellite.longitude, 'E', 'W')}`}
-                    </title>
-                  </circle>
-                ))}
-
-                {selectedGodsEyePoint ? (
-                  <circle
-                    cx={selectedGodsEyePoint.overheadX}
-                    cy={selectedGodsEyePoint.overheadY}
-                    r="10"
-                    className="selected-ring"
-                  />
-                ) : null}
-              </svg>
+              <div className="plot-shell">
+                <Plot
+                  data={godsEyeFigure.data}
+                  layout={godsEyeFigure.layout}
+                  config={godsEyeFigure.config}
+                  useResizeHandler
+                  className="gods-eye-plot"
+                  style={{ width: '100%', height: '100%' }}
+                  onError={(nextError) => {
+                    const message = nextError instanceof Error ? nextError.message : String(nextError);
+                    setPlotError(message);
+                  }}
+                  onRelayout={(event) => {
+                    const camera = extractCamera(event);
+                    if (camera) {
+                      setGodsEyeCamera(camera);
+                    }
+                  }}
+                />
+              </div>
             )}
 
             <div className="map-legend">
@@ -675,10 +874,10 @@ export default function App() {
             <div className="satellite-list" role="list">
               {listedSatellites.map((satellite) => (
                 <button
-                  key={`${satellite.name}-${satellite.category}-list`}
+                  key={satellite.id}
                   type="button"
-                  className={`satellite-item${selectedSatelliteName === satellite.name ? ' active' : ''}`}
-                  onClick={() => setSelectedSatelliteName(satellite.name)}
+                  className={`satellite-item${selectedSatelliteId === satellite.id ? ' active' : ''}`}
+                  onClick={() => setSelectedSatelliteId(satellite.id)}
                 >
                   <span
                     className="satellite-dot"
