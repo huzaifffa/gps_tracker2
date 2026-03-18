@@ -204,12 +204,12 @@ body {
 }
 
 .plot-shell {
-  min-height: 70vh;
-  height: 100%;
+  height: clamp(420px, 58vh, 720px);
+  max-height: 720px;
 }
 
 .gods-eye-plot {
-  min-height: 70vh;
+  height: 100%;
 }
 
 .satellite-sidebar {
