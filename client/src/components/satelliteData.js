@@ -16,10 +16,37 @@ import {
   LOCAL_STATIONS_URL,
   MAP_HEIGHT,
   MAP_WIDTH,
+  REFRESH_OPTIONS,
   STATIONS_URL,
+  SATELLITE_CATEGORIES,
+  TRACKER_SETTINGS_STORAGE_KEY,
+  TRACKER_SETTINGS_URL,
+  VIEW_MODES,
 } from './constants';
 
 let landDataPromise;
+
+function normalizeTrackerSettings(candidate) {
+  const normalizedCategories = Array.isArray(candidate?.selectedCategories)
+    ? candidate.selectedCategories.filter((category) => SATELLITE_CATEGORIES.includes(category))
+    : [];
+
+  return {
+    autoRefreshEnabled:
+      typeof candidate?.autoRefreshEnabled === 'boolean' ? candidate.autoRefreshEnabled : true,
+    refreshSeconds:
+      typeof candidate?.refreshSeconds === 'number' && REFRESH_OPTIONS.includes(candidate.refreshSeconds)
+        ? candidate.refreshSeconds
+        : null,
+    selectedCategories: normalizedCategories.length ? normalizedCategories : SATELLITE_CATEGORIES,
+    selectedSatelliteName:
+      typeof candidate?.selectedSatelliteName === 'string' ? candidate.selectedSatelliteName.trim() : '',
+    viewMode:
+      candidate?.viewMode === VIEW_MODES.godsEye || candidate?.viewMode === VIEW_MODES.map
+        ? candidate.viewMode
+        : VIEW_MODES.map,
+  };
+}
 
 export function classifySatellite(name) {
   const upper = name.toUpperCase();
@@ -497,4 +524,39 @@ export function buildGodsEyeFigure(selectedCategories, satelliteData, landData, 
   }
 
   return figure;
+}
+
+export async function loadTrackerSettings() {
+  let fileSettings = {};
+
+  try {
+    fileSettings = await fetchJsonWithTimeout(TRACKER_SETTINGS_URL, 12000);
+  } catch {
+    fileSettings = {};
+  }
+
+  let storedSettings = {};
+
+  try {
+    const rawSettings = window.localStorage.getItem(TRACKER_SETTINGS_STORAGE_KEY);
+    storedSettings = rawSettings ? JSON.parse(rawSettings) : {};
+  } catch {
+    storedSettings = {};
+  }
+
+  return normalizeTrackerSettings({
+    ...fileSettings,
+    ...storedSettings,
+  });
+}
+
+export function saveTrackerSettings(settings) {
+  try {
+    window.localStorage.setItem(
+      TRACKER_SETTINGS_STORAGE_KEY,
+      JSON.stringify(normalizeTrackerSettings(settings)),
+    );
+  } catch {
+    // Ignore storage failures so the tracker keeps working in restricted browsers.
+  }
 }

@@ -6,6 +6,8 @@ export const ACTIVE_SATS_URL = 'https://celestrak.org/NORAD/elements/gp.php?GROU
 export const LAND_GEOJSON_URL = 'https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json';
 export const LOCAL_STATIONS_URL = '/data/stations.tle';
 export const LOCAL_ACTIVE_URL = '/data/active.tle';
+export const TRACKER_SETTINGS_URL = '/data/tracker-settings.json';
+export const TRACKER_SETTINGS_STORAGE_KEY = 'gps-tracker-settings';
 export const SATELLITE_CATEGORIES = [
   'Stations',
   'Starlink',

@@ -10,7 +10,9 @@ import {
   buildSatelliteSnapshot,
   formatTimestamp,
   loadLandData,
+  loadTrackerSettings,
   loadTleFeeds,
+  saveTrackerSettings,
 } from './satelliteData';
 
 export function useSatelliteTracker() {
@@ -34,7 +36,9 @@ export function useSatelliteTracker() {
   const [sourceNotes, setSourceNotes] = useState([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [selectedSatelliteName, setSelectedSatelliteName] = useState('');
   const refreshTimerRef = useRef(null);
+  const settingsHydratedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,14 +48,21 @@ export function useSatelliteTracker() {
       setError('');
 
       try {
-        const [nextFeeds, nextLandData] = await Promise.all([
+        const [nextFeeds, nextLandData, trackerSettings] = await Promise.all([
           loadTleFeeds(),
           loadLandData(),
+          loadTrackerSettings(),
         ]);
 
         if (cancelled) {
           return;
         }
+
+        setSelectedCategories(trackerSettings.selectedCategories);
+        setAutoRefreshEnabled(trackerSettings.autoRefreshEnabled);
+        setRefreshSeconds(trackerSettings.refreshSeconds ?? REFRESH_OPTIONS[1]);
+        setViewMode(trackerSettings.viewMode);
+        setSelectedSatelliteName(trackerSettings.selectedSatelliteName);
 
         const nextData = buildSatelliteSnapshot(nextFeeds, new Date());
         setFeeds(nextFeeds);
@@ -59,6 +70,7 @@ export function useSatelliteTracker() {
         setSourceSummary(nextFeeds.sourceSummary);
         setSourceNotes(nextFeeds.sourceNotes);
         setSatelliteData(nextData);
+        settingsHydratedRef.current = true;
       } catch (loadError) {
         if (cancelled) {
           return;
@@ -103,6 +115,20 @@ export function useSatelliteTracker() {
       }
     };
   }, [autoRefreshEnabled, feeds, refreshSeconds]);
+
+  useEffect(() => {
+    if (!satelliteData.satellites.length || !selectedSatelliteName) {
+      return;
+    }
+
+    const matchingSatellite = satelliteData.satellites.find(
+      (satellite) => satellite.name === selectedSatelliteName,
+    );
+
+    if (matchingSatellite && matchingSatellite.id !== selectedSatelliteId) {
+      setSelectedSatelliteId(matchingSatellite.id);
+    }
+  }, [satelliteData.satellites, selectedSatelliteId, selectedSatelliteName]);
 
   async function handleManualRefresh() {
     setLoading(true);
@@ -154,6 +180,37 @@ export function useSatelliteTracker() {
     () => satelliteData.satellites.find((satellite) => satellite.id === selectedSatelliteId) ?? null,
     [satelliteData.satellites, selectedSatelliteId],
   );
+
+  useEffect(() => {
+    if (!settingsHydratedRef.current) {
+      return;
+    }
+
+    saveTrackerSettings({
+      autoRefreshEnabled,
+      refreshSeconds,
+      selectedCategories,
+      selectedSatelliteName: selectedSatellite?.name ?? selectedSatelliteName,
+      viewMode,
+    });
+  }, [
+    autoRefreshEnabled,
+    refreshSeconds,
+    selectedCategories,
+    selectedSatellite?.name,
+    selectedSatelliteName,
+    viewMode,
+  ]);
+
+  useEffect(() => {
+    if (selectedSatellite?.name && selectedSatellite.name !== selectedSatelliteName) {
+      setSelectedSatelliteName(selectedSatellite.name);
+    }
+
+    if (!selectedSatellite && selectedSatelliteId) {
+      setSelectedSatelliteName('');
+    }
+  }, [selectedSatellite, selectedSatelliteId, selectedSatelliteName]);
 
   const categoryCounts = useMemo(
     () => SATELLITE_CATEGORIES.map((category) => ({
